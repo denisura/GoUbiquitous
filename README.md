@@ -22,6 +22,18 @@ Getting Started
 This sample uses the Gradle build system.  To build this project, use the
 "gradlew build" command or use "Import Project" in Android Studio.
 
+
+
+Development
+---------------
+
+Pair your handheld with the emulator.
+Forward the AVD's communication port to the connected handheld device (you must do this every time the handheld is connected):
+
+```
+adb -d forward tcp:5601 tcp:5601
+```
+
 Support
 -------
 

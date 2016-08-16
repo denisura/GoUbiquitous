@@ -21,6 +21,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.Resources;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -34,11 +36,13 @@ import android.support.wearable.watchface.WatchFaceStyle;
 import android.view.SurfaceHolder;
 import android.view.WindowInsets;
 
-
 import java.lang.ref.WeakReference;
+import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
+
+import static com.example.android.sunshine.wearable.R.dimen.digital_date_text_size_round;
 
 /**
  * Digital watch face with seconds. In ambient mode, the seconds aren't displayed. On devices with
@@ -88,7 +92,11 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
         final Handler mUpdateTimeHandler = new EngineHandler(this);
         boolean mRegisteredTimeZoneReceiver = false;
         Paint mBackgroundPaint;
-        Paint mTextPaint;
+        Paint mTimeTextPaint;
+        //        Paint mTimeTextPaint;
+        Paint mLowTempTextPaint;
+        Paint mHighTempTextPaint;
+        Paint mDateTextPaint;
         boolean mAmbient;
         Calendar mCalendar;
         final BroadcastReceiver mTimeZoneReceiver = new BroadcastReceiver() {
@@ -122,8 +130,15 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
             mBackgroundPaint = new Paint();
             mBackgroundPaint.setColor(resources.getColor(R.color.background));
 
-            mTextPaint = new Paint();
-            mTextPaint = createTextPaint(resources.getColor(R.color.digital_text));
+
+            mDateTextPaint = createTextPaint(resources.getColor(R.color.primary_light));
+            mDateTextPaint.setTextAlign(Paint.Align.CENTER);
+
+            mTimeTextPaint = createTextPaint(resources.getColor(R.color.digital_text));
+            mTimeTextPaint.setTextAlign(Paint.Align.CENTER);
+
+            mLowTempTextPaint = createTextPaint(resources.getColor(R.color.primary_light));
+            mHighTempTextPaint = createTextPaint(resources.getColor(R.color.digital_text));
 
             mCalendar = Calendar.getInstance();
         }
@@ -190,7 +205,19 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
             float textSize = resources.getDimension(isRound
                     ? R.dimen.digital_text_size_round : R.dimen.digital_text_size);
 
-            mTextPaint.setTextSize(textSize);
+            mTimeTextPaint.setTextSize(textSize);
+
+            float dateTextSize = resources.getDimension(isRound
+                    ? digital_date_text_size_round : R.dimen.digital_date_text_size);
+            mDateTextPaint.setTextSize(dateTextSize);
+
+            float lowTempTextSize = resources.getDimension(isRound
+                    ? digital_date_text_size_round : R.dimen.digital_date_text_size);
+            mLowTempTextPaint.setTextSize(lowTempTextSize);
+
+            float highTempTextSize = resources.getDimension(isRound
+                    ? R.dimen.low_temp_text_size_round : R.dimen.low_temp_text_size);
+            mHighTempTextPaint.setTextSize(highTempTextSize);
         }
 
         @Override
@@ -211,7 +238,7 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
             if (mAmbient != inAmbientMode) {
                 mAmbient = inAmbientMode;
                 if (mLowBitAmbient) {
-                    mTextPaint.setAntiAlias(!inAmbientMode);
+                    mTimeTextPaint.setAntiAlias(!inAmbientMode);
                 }
                 invalidate();
             }
@@ -234,12 +261,21 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
             long now = System.currentTimeMillis();
             mCalendar.setTimeInMillis(now);
 
-            String text = mAmbient
-                    ? String.format("%d:%02d", mCalendar.get(Calendar.HOUR),
-                    mCalendar.get(Calendar.MINUTE))
-                    : String.format("%d:%02d:%02d", mCalendar.get(Calendar.HOUR),
-                    mCalendar.get(Calendar.MINUTE), mCalendar.get(Calendar.SECOND));
-            canvas.drawText(text, mXOffset, mYOffset, mTextPaint);
+            String time = String.format("%d:%02d", mCalendar.get(Calendar.HOUR),
+                    mCalendar.get(Calendar.MINUTE));
+
+            SimpleDateFormat format = new SimpleDateFormat("EEE, MMM d yyyy");
+            String date = format.format(mCalendar.getTime());
+
+            mXOffset = bounds.width() / 2;
+            canvas.drawText(time, bounds.width() / 2, bounds.height() / 4 - (mTimeTextPaint.descent() + mTimeTextPaint.ascent()) / 2, mTimeTextPaint);
+            canvas.drawText(date, mXOffset, bounds.height() / 2 - 30, mDateTextPaint);
+            canvas.drawText(String.format(getString(R.string.format_temperature), 25f), bounds.width() / 2, bounds.height() / 4 * 3, mHighTempTextPaint);
+            canvas.drawText(String.format(getString(R.string.format_temperature), 16f), bounds.width() / 4 * 3, bounds.height() / 4 * 3, mLowTempTextPaint);
+            canvas.drawLine(bounds.width() / 4, bounds.width() / 2, bounds.width() / 4 * 3, bounds.width() / 2, mTimeTextPaint);
+
+            Bitmap bmp = BitmapFactory.decodeResource(getResources(), getArtResourceForWeatherCondition(520));
+            canvas.drawBitmap(bmp, bounds.width() / 4 - bmp.getWidth() / 3, bounds.height() / 4 * 3 - bmp.getHeight() / 3 * 2, null); // 24 is the height of image
         }
 
         /**
@@ -273,5 +309,35 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
                 mUpdateTimeHandler.sendEmptyMessageDelayed(MSG_UPDATE_TIME, delayMs);
             }
         }
+    }
+
+
+    public static int getArtResourceForWeatherCondition(int weatherId) {
+        // Based on weather code data found at:
+        // http://bugs.openweathermap.org/projects/api/wiki/Weather_Condition_Codes
+        if (weatherId >= 200 && weatherId <= 232) {
+            return R.drawable.art_storm;
+        } else if (weatherId >= 300 && weatherId <= 321) {
+            return R.drawable.art_light_rain;
+        } else if (weatherId >= 500 && weatherId <= 504) {
+            return R.drawable.art_rain;
+        } else if (weatherId == 511) {
+            return R.drawable.art_snow;
+        } else if (weatherId >= 520 && weatherId <= 531) {
+            return R.drawable.art_rain;
+        } else if (weatherId >= 600 && weatherId <= 622) {
+            return R.drawable.art_snow;
+        } else if (weatherId >= 701 && weatherId <= 761) {
+            return R.drawable.art_fog;
+        } else if (weatherId == 761 || weatherId == 781) {
+            return R.drawable.art_storm;
+        } else if (weatherId == 800) {
+            return R.drawable.art_clear;
+        } else if (weatherId == 801) {
+            return R.drawable.art_light_clouds;
+        } else if (weatherId >= 802 && weatherId <= 804) {
+            return R.drawable.art_clouds;
+        }
+        return -1;
     }
 }
