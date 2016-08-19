@@ -31,10 +31,23 @@ import android.graphics.Typeface;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 import android.support.wearable.watchface.CanvasWatchFaceService;
 import android.support.wearable.watchface.WatchFaceStyle;
+import android.util.Log;
 import android.view.SurfaceHolder;
 import android.view.WindowInsets;
+
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.wearable.DataApi;
+import com.google.android.gms.wearable.DataEvent;
+import com.google.android.gms.wearable.DataEventBuffer;
+import com.google.android.gms.wearable.DataItem;
+import com.google.android.gms.wearable.DataMap;
+import com.google.android.gms.wearable.DataMapItem;
+import com.google.android.gms.wearable.Wearable;
 
 import java.lang.ref.WeakReference;
 import java.text.SimpleDateFormat;
@@ -42,6 +55,7 @@ import java.util.Calendar;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 
+import static android.content.ContentValues.TAG;
 import static com.example.android.sunshine.wearable.R.dimen.digital_date_text_size_round;
 
 /**
@@ -88,7 +102,10 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
         }
     }
 
-    private class Engine extends CanvasWatchFaceService.Engine {
+    private class Engine extends CanvasWatchFaceService.Engine implements DataApi.DataListener,
+            GoogleApiClient.ConnectionCallbacks, GoogleApiClient.OnConnectionFailedListener
+
+    {
         final Handler mUpdateTimeHandler = new EngineHandler(this);
         boolean mRegisteredTimeZoneReceiver = false;
         Paint mBackgroundPaint;
@@ -97,6 +114,11 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
         Paint mLowTempTextPaint;
         Paint mHighTempTextPaint;
         Paint mDateTextPaint;
+
+        int mWeatherId;
+        double mWeatherHighTempValue;
+        double mWeatherLowTempValue;
+
         boolean mAmbient;
         Calendar mCalendar;
         final BroadcastReceiver mTimeZoneReceiver = new BroadcastReceiver() {
@@ -114,6 +136,14 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
          * disable anti-aliasing in ambient mode.
          */
         boolean mLowBitAmbient;
+
+
+        GoogleApiClient mGoogleApiClient = new GoogleApiClient.Builder(SunshineDigitalWatchFace.this)
+                .addConnectionCallbacks(this)
+                .addOnConnectionFailedListener(this)
+                .addApi(Wearable.API)
+                .build();
+
 
         @Override
         public void onCreate(SurfaceHolder holder) {
@@ -162,6 +192,7 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
             super.onVisibilityChanged(visible);
 
             if (visible) {
+                mGoogleApiClient.connect();
                 registerReceiver();
 
                 // Update time zone in case it changed while we weren't visible.
@@ -169,6 +200,10 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
                 invalidate();
             } else {
                 unregisterReceiver();
+                if (mGoogleApiClient != null && mGoogleApiClient.isConnected()) {
+                    Wearable.DataApi.removeListener(mGoogleApiClient, this);
+                    mGoogleApiClient.disconnect();
+                }
             }
 
             // Whether the timer should be running depends on whether we're visible (as well as
@@ -250,6 +285,9 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
 
         @Override
         public void onDraw(Canvas canvas, Rect bounds) {
+
+//            Log.d(TAG, "onDraw");
+
             // Draw the background.
             if (isInAmbientMode()) {
                 canvas.drawColor(Color.BLACK);
@@ -270,12 +308,17 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
             mXOffset = bounds.width() / 2;
             canvas.drawText(time, bounds.width() / 2, bounds.height() / 4 - (mTimeTextPaint.descent() + mTimeTextPaint.ascent()) / 2, mTimeTextPaint);
             canvas.drawText(date, mXOffset, bounds.height() / 2 - 30, mDateTextPaint);
-            canvas.drawText(String.format(getString(R.string.format_temperature), 25f), bounds.width() / 2, bounds.height() / 4 * 3, mHighTempTextPaint);
-            canvas.drawText(String.format(getString(R.string.format_temperature), 16f), bounds.width() / 4 * 3, bounds.height() / 4 * 3, mLowTempTextPaint);
+            canvas.drawText(String.format(getString(R.string.format_temperature), mWeatherHighTempValue), bounds.width() / 2, bounds.height() / 4 * 3, mHighTempTextPaint);
+            canvas.drawText(String.format(getString(R.string.format_temperature), mWeatherLowTempValue), bounds.width() / 4 * 3, bounds.height() / 4 * 3, mLowTempTextPaint);
             canvas.drawLine(bounds.width() / 4, bounds.width() / 2, bounds.width() / 4 * 3, bounds.width() / 2, mTimeTextPaint);
 
-            Bitmap bmp = BitmapFactory.decodeResource(getResources(), getArtResourceForWeatherCondition(520));
-            canvas.drawBitmap(bmp, bounds.width() / 4 - bmp.getWidth() / 3, bounds.height() / 4 * 3 - bmp.getHeight() / 3 * 2, null); // 24 is the height of image
+
+            int resourceId = getArtResourceForWeatherCondition(mWeatherId);
+            if (resourceId > 0) {
+                Bitmap bmp = BitmapFactory.decodeResource(getResources(), resourceId);
+                canvas.drawBitmap(bmp, bounds.width() / 4 - bmp.getWidth() / 3, bounds.height() / 4 * 3 - bmp.getHeight() / 3 * 2, null); // 24 is the height of image
+            }
+
         }
 
         /**
@@ -307,6 +350,108 @@ public class SunshineDigitalWatchFace extends CanvasWatchFaceService {
                 long delayMs = INTERACTIVE_UPDATE_RATE_MS
                         - (timeMs % INTERACTIVE_UPDATE_RATE_MS);
                 mUpdateTimeHandler.sendEmptyMessageDelayed(MSG_UPDATE_TIME, delayMs);
+            }
+        }
+
+        @Override
+        public void onConnected(@Nullable Bundle bundle) {
+            Log.d(TAG, "onConnected: " + bundle);
+            if (Log.isLoggable(TAG, Log.DEBUG)) {
+                Log.d(TAG, "onConnected: " + bundle);
+            }
+            Wearable.DataApi.addListener(mGoogleApiClient, Engine.this);
+            updateConfigDataItemAndUiOnStartup();
+        }
+
+        @Override
+        public void onConnectionSuspended(int cause) {
+            Log.d(TAG, "onConnectionSuspended: " + cause);
+            if (Log.isLoggable(TAG, Log.DEBUG)) {
+                Log.d(TAG, "onConnectionSuspended: " + cause);
+            }
+        }
+
+        @Override
+        public void onConnectionFailed(@NonNull ConnectionResult connectionResult) {
+            Log.d(TAG, "onConnectionFailed: " + connectionResult);
+            //TODO add message to update google play
+            if (Log.isLoggable(TAG, Log.DEBUG)) {
+                Log.d(TAG, "onConnectionFailed: " + connectionResult);
+            }
+        }
+
+        @Override
+        public void onDataChanged(DataEventBuffer dataEventBuffer) {
+            for (DataEvent dataEvent : dataEventBuffer) {
+                if (dataEvent.getType() != DataEvent.TYPE_CHANGED) {
+                    continue;
+                }
+
+                DataItem dataItem = dataEvent.getDataItem();
+                if (!dataItem.getUri().getPath().equals(
+                        DigitalWatchFaceUtil.PATH_WITH_FEATURE)) {
+                    continue;
+                }
+
+                DataMapItem dataMapItem = DataMapItem.fromDataItem(dataItem);
+                DataMap config = dataMapItem.getDataMap();
+                if (Log.isLoggable(TAG, Log.DEBUG)) {
+                    Log.d(TAG, "Config DataItem updated:" + config);
+                }
+                updateUiForConfigDataMap(config);
+            }
+        }
+
+
+        private void updateConfigDataItemAndUiOnStartup() {
+            DigitalWatchFaceUtil.fetchConfigDataMap(mGoogleApiClient,
+                    new DigitalWatchFaceUtil.FetchConfigDataMapCallback() {
+                        @Override
+                        public void onConfigDataMapFetched(DataMap startupConfig) {
+                            // If the DataItem hasn't been created yet or some keys are missing,
+                            // use the default values.
+                            setDefaultValuesForMissingConfigKeys(startupConfig);
+                            DigitalWatchFaceUtil.putConfigDataItem(mGoogleApiClient, startupConfig);
+
+                            updateUiForConfigDataMap(startupConfig);
+                        }
+                    }
+            );
+        }
+
+        private void setDefaultValuesForMissingConfigKeys(DataMap config) {
+            if (!config.containsKey(DigitalWatchFaceUtil.KEY_WEATHER_ID)) {
+                config.putInt(DigitalWatchFaceUtil.KEY_WEATHER_ID, DigitalWatchFaceUtil.UNKNOWN_WEATHER_ID);
+            }
+            if (!config.containsKey(DigitalWatchFaceUtil.KEY_HIGH_TEMP)) {
+                config.putDouble(DigitalWatchFaceUtil.KEY_HIGH_TEMP, DigitalWatchFaceUtil.UNKNOWN_HIGH_TEMP);
+            }
+            if (!config.containsKey(DigitalWatchFaceUtil.KEY_LOW_TEMP)) {
+                config.putDouble(DigitalWatchFaceUtil.KEY_LOW_TEMP, DigitalWatchFaceUtil.UNKNOWN_LOW_TEMP);
+            }
+        }
+
+
+        private void updateUiForConfigDataMap(final DataMap config) {
+            boolean uiUpdated = false;
+
+            if (config.containsKey(DigitalWatchFaceUtil.KEY_WEATHER_ID)) {
+                mWeatherId = config.getInt(DigitalWatchFaceUtil.KEY_WEATHER_ID);
+                uiUpdated = true;
+            }
+
+            if (config.containsKey(DigitalWatchFaceUtil.KEY_HIGH_TEMP)) {
+                mWeatherHighTempValue = config.getDouble(DigitalWatchFaceUtil.KEY_HIGH_TEMP);
+                uiUpdated = true;
+            }
+
+            if (config.containsKey(DigitalWatchFaceUtil.KEY_LOW_TEMP)) {
+                mWeatherLowTempValue = config.getDouble(DigitalWatchFaceUtil.KEY_LOW_TEMP);
+                uiUpdated = true;
+            }
+
+            if (uiUpdated) {
+                invalidate();
             }
         }
     }
