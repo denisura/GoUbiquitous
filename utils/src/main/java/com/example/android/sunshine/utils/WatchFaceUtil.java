@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
-package com.example.android.sunshine.wearable;
+package com.example.android.sunshine.utils;
 
 import android.net.Uri;
+import android.support.annotation.NonNull;
 import android.util.Log;
 
 import com.google.android.gms.common.api.GoogleApiClient;
@@ -25,27 +26,24 @@ import com.google.android.gms.wearable.DataApi;
 import com.google.android.gms.wearable.DataItem;
 import com.google.android.gms.wearable.DataMap;
 import com.google.android.gms.wearable.DataMapItem;
+import com.google.android.gms.wearable.Node;
 import com.google.android.gms.wearable.NodeApi;
 import com.google.android.gms.wearable.PutDataMapRequest;
+import com.google.android.gms.wearable.PutDataRequest;
 import com.google.android.gms.wearable.Wearable;
 
-public final class DigitalWatchFaceUtil {
-    private static final String TAG = "DigitalWatchFaceUtil";
+public final class WatchFaceUtil {
+    private static final String TAG = "WatchFaceUtil";
 
     public static final String KEY_WEATHER_ID = "KEY_WEATHER_ID";
     public static final String KEY_HIGH_TEMP = "KEY_HIGH_TEMP";
     public static final String KEY_LOW_TEMP = "KEY_LOW_TEMP";
 
-    public static final String PATH_WITH_FEATURE = "/watch_face_config/Digital";
-
-    public static final int UNKNOWN_WEATHER_ID = 800;
-    public static final double UNKNOWN_HIGH_TEMP = 25f;
-    public static final double UNKNOWN_LOW_TEMP = 16f;
+    public static final String PATH_WEATHER = "/weather";
 
     public interface FetchConfigDataMapCallback {
         void onConfigDataMapFetched(DataMap config);
     }
-
 
     /**
      * Asynchronously fetches the current config {@link DataMap}
@@ -55,15 +53,17 @@ public final class DigitalWatchFaceUtil {
      * receives an empty DataMap.
      */
     public static void fetchConfigDataMap(final GoogleApiClient client,
-            final FetchConfigDataMapCallback callback) {
+                                          final FetchConfigDataMapCallback callback) {
+
+        Log.d(TAG, "fetchConfigDataMap");
         Wearable.NodeApi.getLocalNode(client).setResultCallback(
                 new ResultCallback<NodeApi.GetLocalNodeResult>() {
                     @Override
                     public void onResult(NodeApi.GetLocalNodeResult getLocalNodeResult) {
                         String localNode = getLocalNodeResult.getNode().getId();
                         Uri uri = new Uri.Builder()
-                                .scheme("wear")
-                                .path(DigitalWatchFaceUtil.PATH_WITH_FEATURE)
+                                .scheme(PutDataRequest.WEAR_URI_SCHEME)
+                                .path(WatchFaceUtil.PATH_WEATHER)
                                 .authority(localNode)
                                 .build();
                         Wearable.DataApi.getDataItem(client, uri)
@@ -73,39 +73,77 @@ public final class DigitalWatchFaceUtil {
         );
     }
 
-    /**
-     * Overwrites (or sets, if not present) the keys in the current config {@link DataItem} with
-     * the ones appearing in the given {@link DataMap}. If the config DataItem doesn't exist,
-     * it's created.
-     * <p>
-     * It is allowed that only some of the keys used in the config DataItem appear in
-     * {@code configKeysToOverwrite}. The rest of the keys remains unmodified in this case.
-     */
-    public static void overwriteKeysInConfigDataMap(final GoogleApiClient googleApiClient,
-            final DataMap configKeysToOverwrite) {
+    public static void fetchConfigDataMapFromConnectedNode(final GoogleApiClient client, final FetchConfigDataMapCallback callback) {
+        Wearable.NodeApi.getConnectedNodes(client).setResultCallback(new ResultCallback<NodeApi.GetConnectedNodesResult>() {
+            @Override
+            public void onResult(NodeApi.GetConnectedNodesResult nodes) {
 
-        DigitalWatchFaceUtil.fetchConfigDataMap(googleApiClient,
-                new FetchConfigDataMapCallback() {
-                    @Override
-                    public void onConfigDataMapFetched(DataMap currentConfig) {
-                        DataMap overwrittenConfig = new DataMap();
-                        overwrittenConfig.putAll(currentConfig);
-                        overwrittenConfig.putAll(configKeysToOverwrite);
-                        DigitalWatchFaceUtil.putConfigDataItem(googleApiClient, overwrittenConfig);
-                    }
+                Log.d(TAG, "fetchConfigDataMapFromConnectedNode:nodes:size: " + nodes.getNodes().size());
+
+                if (nodes.getNodes().size() == 0) {
+                    //wearable device is disconnected
+                    //get data from local node
+
+                    fetchConfigDataMap(client, callback);
+                    return;
                 }
-        );
+                Node connectedNode = null;
+                for (Node node : nodes.getNodes()) {
+                    connectedNode = node;
+                }
+                if (connectedNode == null) {
+                    return;
+                }
+                Uri uri = new Uri.Builder()
+                        .scheme(PutDataRequest.WEAR_URI_SCHEME)
+                        .path(WatchFaceUtil.PATH_WEATHER)
+                        .authority(connectedNode.getId())
+                        .build();
+                Wearable.DataApi.getDataItem(client, uri)
+                        .setResultCallback(new ResultCallback<DataApi.DataItemResult>() {
+                            @Override
+                            public void onResult(@NonNull DataApi.DataItemResult dataItemResult) {
+                                if (dataItemResult.getStatus().isSuccess()) {
+                                    if (dataItemResult.getDataItem() != null) {
+                                        DataItem configDataItem = dataItemResult.getDataItem();
+                                        DataMapItem dataMapItem = DataMapItem.fromDataItem(configDataItem);
+                                        DataMap config = dataMapItem.getDataMap();
+                                        Log.d(TAG, "fetchConfigDataMapFromConnectedNode:config: " + config);
+
+                                        putWeatherDataItem(client, config);
+                                        callback.onConfigDataMapFetched(config);
+                                    }
+                                }
+                            }
+                        });
+            }
+        });
+    }
+
+    public static void setWeatherInfo(GoogleApiClient client, int weatherId, double highTemp, double lowTemp) {
+        if (!client.isConnected()) {
+            client.connect();
+        }
+
+        Log.d(TAG, "setWeatherInfo /" + weatherId + "/" + highTemp + "/" + lowTemp);
+
+        DataMap weatherData = new DataMap();
+        weatherData.putInt(WatchFaceUtil.KEY_WEATHER_ID, weatherId);
+        weatherData.putDouble(WatchFaceUtil.KEY_HIGH_TEMP, highTemp);
+        weatherData.putDouble(WatchFaceUtil.KEY_LOW_TEMP, lowTemp);
+
+        putWeatherDataItem(client, weatherData);
     }
 
     /**
      * Overwrites the current config {@link DataItem}'s {@link DataMap} with {@code newConfig}.
      * If the config DataItem doesn't exist, it's created.
      */
-    public static void putConfigDataItem(GoogleApiClient googleApiClient, DataMap newConfig) {
-        PutDataMapRequest putDataMapRequest = PutDataMapRequest.create(PATH_WITH_FEATURE);
+    public static void putWeatherDataItem(GoogleApiClient googleApiClient, DataMap dataMap) {
+        PutDataMapRequest putDataMapRequest = PutDataMapRequest.create(PATH_WEATHER);
         putDataMapRequest.setUrgent();
         DataMap configToPut = putDataMapRequest.getDataMap();
-        configToPut.putAll(newConfig);
+        configToPut.putAll(dataMap);
         Wearable.DataApi.putDataItem(googleApiClient, putDataMapRequest.asPutDataRequest())
                 .setResultCallback(new ResultCallback<DataApi.DataItemResult>() {
                     @Override
@@ -127,11 +165,14 @@ public final class DigitalWatchFaceUtil {
 
         @Override
         public void onResult(DataApi.DataItemResult dataItemResult) {
+
+            Log.d(TAG, "DataApi.DataItemResult");
             if (dataItemResult.getStatus().isSuccess()) {
                 if (dataItemResult.getDataItem() != null) {
                     DataItem configDataItem = dataItemResult.getDataItem();
                     DataMapItem dataMapItem = DataMapItem.fromDataItem(configDataItem);
                     DataMap config = dataMapItem.getDataMap();
+                    Log.d(TAG, "DataApi.DataItemResult:success " + config.toString());
                     mCallback.onConfigDataMapFetched(config);
                 } else {
                     mCallback.onConfigDataMapFetched(new DataMap());
@@ -140,5 +181,6 @@ public final class DigitalWatchFaceUtil {
         }
     }
 
-    private DigitalWatchFaceUtil() { }
+    private WatchFaceUtil() {
+    }
 }
